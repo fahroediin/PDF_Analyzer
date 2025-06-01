@@ -1,0 +1,11 @@
+# Node modules
+node_modules/
+# Bun lock file
+bun.lock
+# Environment variables
+.env
+# Logs
+*.log
+# OS generated files
+.DS_Store
+Thumbs.db

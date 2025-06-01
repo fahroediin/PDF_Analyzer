@@ -1,0 +1,12 @@
+{
+  "name": "pdf-analyzer",
+  "version": "1.0.0",
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.70",
+    "pdfjs-dist": "4.9.155",
+    "ppu-paddle-ocr": "^1.1.0",
+    "ppu-pdf": "^5.2.1",
+    "string-similarity": "^4.0.4",
+    "tesseract.js": "4.0.2"
+  }
+}
