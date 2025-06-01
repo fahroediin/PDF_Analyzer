@@ -84,12 +84,11 @@ async function ocrPaddle(pdfReader, pdf, isScanned) {
       if (!canvas) continue;
       const texts = await ocr.recognize(canvas);
       const flattenedLines = texts.lines.flat();
-      const lines = flattenedLines.map(item => item.text);
+      const lines = flattenedLines.map(item => ({ text: item.text }));
 
-      console.log("OCR lines raw:", lines);
+      console.log("OCR lines raw:", lines.map(l => l.text));  // tetap tampilkan string saja
 
-    result[i] = lines;  // tanpa preprocessLines & cleanLines
-
+      result[i] = lines;
     }
     await ocr.destroy();
   } else {
@@ -101,8 +100,6 @@ async function ocrPaddle(pdfReader, pdf, isScanned) {
   }
   return result;
 }
-
-
 
 // Gabungkan hasil OCR Tesseract dan Paddle, lalu buat array string unik berdasarkan normalisasi ketat
 function mergeAllPagesUnique(resultTesseract, resultPaddle) {
@@ -163,7 +160,7 @@ serve({
         let mergedLines = mergeAllPagesUnique(resultTesseract, resultPaddle);
 
         // 🔥 Terapkan mergeLines untuk menggabungkan lanjutan key yang terpisah
-        mergedLines = mergeLines(mergedLines);
+        mergedLines = mergeLines(mergedLines, docType);
 
         // Parsing hasil OCR gabungan
         let parsedData = {};

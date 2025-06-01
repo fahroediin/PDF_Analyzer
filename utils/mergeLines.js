@@ -1,26 +1,58 @@
-export function mergeLines(lines) {
+export function mergeLines(lines, docType = "") {
   const merged = [];
-  let buffer = "";
-  // Tambahkan key penting agar baris terpisah dengan benar
-  const keyRegex = /^\s*(\d+\.\s*|[A-Za-z0-9\s\-()]+[:：])\s*|^(Email|Nama|Alamat|Kode|NPWP|NIK|Tempat|Tanggal|Periode|Total|Denda|Jatuh Tempo|ID Pelanggan)\s*[:：\-]/i;
 
-  for (let line of lines) {
-    line = line.trim();
-    if (keyRegex.test(line)) {
-      if (buffer) merged.push(buffer.trim());
-      buffer = line;
-    } else {
-      if (!buffer) {
+  if (docType.toUpperCase() === "KTP") {
+    const keyWords = [
+      "NIK",
+      "Nama",
+      "Tempat/TglLahir",
+      "Jenis kelamin",
+      "Gol.Darah",
+      "Alamat",
+      "RT/RW",
+      "Kel/Desa",
+      "Kecamatan",
+      "Status Perkawinan",
+      "Agama",
+      "Pekerjaan",
+      "Kewarganegaraan",
+      "Berlaku Hingga",
+    ];
+
+    // Gabung semua lines jadi satu string dulu
+    let bigText = lines.join(" ");
+
+    // Split berdasarkan key yang ditemukan (gunakan lookahead agar tidak hilang kata)
+    const pattern = new RegExp(`(?=\\b(?:${keyWords.join("|")})\\b)`, "g");
+
+    const splitted = bigText.split(pattern).map(s => s.trim()).filter(s => s.length > 0);
+
+    // Tambahkan hasil split ke merged
+    for (const part of splitted) {
+      merged.push(part);
+    }
+
+  } else {
+    // aturan merge umum
+    let buffer = "";
+    const keyRegex = /^\s*(\d+\.\s*|[A-Za-z0-9\s\-()]+[:：])\s*|^(Email|Nama|Alamat|Kode|NPWP|NIK|Tempat|Tanggal|Periode|Total|Denda|Jatuh Tempo|ID Pelanggan)\s*[:：\-]/i;
+
+    for (let line of lines) {
+      line = line.trim();
+      if (keyRegex.test(line)) {
+        if (buffer) merged.push(buffer.trim());
         buffer = line;
       } else {
-        buffer += " " + line;
+        if (!buffer) buffer = line;
+        else buffer += " " + line;
       }
     }
+    if (buffer) merged.push(buffer.trim());
   }
 
-  if (buffer) merged.push(buffer.trim());
   return merged;
 }
+
 
 export function extractKtpFromLines(lines) {
   const data = {
