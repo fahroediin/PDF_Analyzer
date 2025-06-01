@@ -2,7 +2,7 @@ import { PdfReader } from "ppu-pdf";
 import { createWorker } from "tesseract.js";
 import { PaddleOcrService } from "ppu-paddle-ocr";
 import { parsers } from "./utils/parser.js";
-import { mergeLines } from "./utils/mergeLines.js";
+import { mergeLines, extractKtpFromLines } from "./utils/mergeLines.js";
 import { serve } from "bun";
 
 // Utility: Bersihkan spasi & garis
@@ -17,7 +17,7 @@ function cleanLines(lines) {
   return lines.filter(line => {
     if (line.length < 3) return false;
     const validChars = line.match(/[a-zA-Z0-9]/g) || [];
-    return validChars.length >= 2;
+    return validChars.length >= 0;
   });
 }
 
@@ -83,8 +83,13 @@ async function ocrPaddle(pdfReader, pdf, isScanned) {
       const canvas = canvasMap.get(i);
       if (!canvas) continue;
       const texts = await ocr.recognize(canvas);
-      const lines = texts.map(item => item.text);
-      result[i] = cleanLines(preprocessLines(lines));
+      const flattenedLines = texts.lines.flat();
+      const lines = flattenedLines.map(item => item.text);
+
+      console.log("OCR lines raw:", lines);
+
+    result[i] = lines;  // tanpa preprocessLines & cleanLines
+
     }
     await ocr.destroy();
   } else {
@@ -96,6 +101,8 @@ async function ocrPaddle(pdfReader, pdf, isScanned) {
   }
   return result;
 }
+
+
 
 // Gabungkan hasil OCR Tesseract dan Paddle, lalu buat array string unik berdasarkan normalisasi ketat
 function mergeAllPagesUnique(resultTesseract, resultPaddle) {
@@ -159,8 +166,14 @@ serve({
         mergedLines = mergeLines(mergedLines);
 
         // Parsing hasil OCR gabungan
-        const parser = parsers[docType] || (() => ({}));
-        const parsedData = parser(mergedLines);
+        let parsedData = {};
+        if (docType === "KTP") {
+          parsedData = extractKtpFromLines(mergedLines);
+        } else {
+          const parser = parsers[docType] || (() => ({}));
+          parsedData = parser(mergedLines);
+        }
+
 
         pdfReader.destroy(pdf);
 
