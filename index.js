@@ -3,6 +3,7 @@ import { createWorker } from "tesseract.js";
 import { PaddleOcrService } from "ppu-paddle-ocr";
 import { parsers } from "./utils/parser.js";
 import { mergeLines, extractKtpFromLines } from "./utils/mergeLines.js";
+import { detectHorizontalBlackLines, splitCanvasByLines } from "./utils/canvasUtils.js";
 import { serve } from "bun";
 
 // Utility: Bersihkan spasi & garis
@@ -55,13 +56,26 @@ async function ocrTesseract(pdfReader, pdf, isScanned) {
     await worker.load();
     await worker.loadLanguage("eng");
     await worker.initialize("eng");
+
     for (let i = 0; i < canvasMap.size; i++) {
       const canvas = canvasMap.get(i);
       if (!canvas) continue;
-      const ret = await worker.recognize(canvas.toDataURL());
-      const lines = cleanLines(preprocessLines(ret.data.text.split("\n")));
-      result[i] = lines;
+
+      const linesY = detectHorizontalBlackLines(canvas);
+      const blocks = splitCanvasByLines(canvas, linesY);
+
+      result[i] = [];
+      for (const blockCanvas of blocks) {
+        try {
+          const ret = await worker.recognize(blockCanvas.transferToImageBitmap());
+          const lines = cleanLines(preprocessLines(ret.data.text.split("\n")));
+          result[i].push(...lines);
+        } catch (err) {
+          console.error(`Tesseract error on page ${i} block:`, err);
+        }
+      }
     }
+
     await worker.terminate();
   } else {
     const textMap = pdfReader.getLinesFromTexts(await pdfReader.getTexts(pdf));
@@ -72,6 +86,7 @@ async function ocrTesseract(pdfReader, pdf, isScanned) {
   }
   return result;
 }
+
 
 // OCR: PaddleOCR
 async function ocrPaddle(pdfReader, pdf, isScanned) {
