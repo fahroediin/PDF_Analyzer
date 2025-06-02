@@ -1,0 +1,13 @@
+{
+  "dependencies": {
+    "bun": "^1.2.15",
+    "ppu-paddle-ocr": "^1.1.0",
+    "ppu-pdf": "^5.2.1",
+    "tesseract.js": "^6.0.1"
+  },
+  "trustedDependencies": [
+    "bun",
+    "onnxruntime-node",
+    "tesseract.js"
+  ]
+}
