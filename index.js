@@ -3,7 +3,6 @@ import { createWorker } from "tesseract.js";
 import { PaddleOcrService } from "ppu-paddle-ocr";
 import { parsers } from "./utils/parser.js";
 import { mergeLines, extractKtpFromLines } from "./utils/mergeLines.js";
-import { detectHorizontalBlackLines, splitCanvasByLines } from "./utils/canvasUtils.js";
 import { serve } from "bun";
 
 // Utility: Bersihkan spasi & garis
@@ -48,37 +47,31 @@ function extractTextsFromOcrResult(ocrResult) {
 }
 
 // OCR: Tesseract.js
-async function ocrTesseract(pdfReader, pdf, isScanned) {
+async function ocrTesseract(PdfReader, pdf, isScanned) {
   const result = {};
   if (isScanned) {
-    const canvasMap = await pdfReader.renderAll(pdf);
-    const worker = await createWorker();
-    await worker.load();
-    await worker.loadLanguage("eng");
+    const canvasMap = await PdfReader.renderAll(pdf);
+    const worker = await createWorker({ logger: m => console.log(m) });
+
     await worker.initialize("eng");
 
     for (let i = 0; i < canvasMap.size; i++) {
       const canvas = canvasMap.get(i);
       if (!canvas) continue;
 
-      const linesY = detectHorizontalBlackLines(canvas);
-      const blocks = splitCanvasByLines(canvas, linesY);
-
-      result[i] = [];
-      for (const blockCanvas of blocks) {
-        try {
-          const ret = await worker.recognize(blockCanvas.transferToImageBitmap());
-          const lines = cleanLines(preprocessLines(ret.data.text.split("\n")));
-          result[i].push(...lines);
-        } catch (err) {
-          console.error(`Tesseract error on page ${i} block:`, err);
-        }
+      try {
+        const { data: { text } } = await worker.recognize(canvas);
+        const lines = cleanLines(preprocessLines(text.split("\n")));
+        result[i] = lines;
+      } catch (err) {
+        console.error(`Tesseract error on page ${i}:`, err);
+        result[i] = [];
       }
     }
 
     await worker.terminate();
   } else {
-    const textMap = pdfReader.getLinesFromTexts(await pdfReader.getTexts(pdf));
+    const textMap = PdfReader.getLinesFromTexts(await PdfReader.getTexts(pdf));
     for (let i = 0; i < textMap.size; i++) {
       const lines = textMap.get(i);
       if (lines) result[i] = lines;
@@ -86,7 +79,6 @@ async function ocrTesseract(pdfReader, pdf, isScanned) {
   }
   return result;
 }
-
 
 // OCR: PaddleOCR
 async function ocrPaddle(pdfReader, pdf, isScanned) {

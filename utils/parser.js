@@ -314,18 +314,19 @@ SIUP(lines) {
     };
   },
 
-  TAGIHAN_LISTRIK(lines) {
-    const text = mergeLines(lines).join("\n");
-    return {
-      id_pelanggan: extractField(text, /ID Pelanggan[:：\-]?\s*(\d+)/i),
-      nama_pelanggan: extractField(text, /Nama[:：\-]?\s*(.+)/i),
-      alamat: extractField(text, /Alamat[:：\-]?\s*(.+)/i),
-      periode: extractField(text, /Periode[:：\-]?\s*(.+)/i),
-      total_tagihan: extractField(text, /Total Tagihan[:：\-]?\s*Rp\s*([\d.,]+)/i),
-      denda: extractField(text, /Denda[:：\-]?\s*Rp\s*([\d.,]+)/i) || "0",
-      jatuh_tempo: extractField(text, /Jatuh Tempo[:：\-]?\s*(.+)/i),
-    };
-  },
+TAGIHAN_LISTRIK(lines) {
+  const text = lines.join("\n");
+
+  return {
+    id_pelanggan: extractField(text, /IDPEL\s*[:：]?\s*(\d{12})/i),
+    nama_pelanggan: extractField(text, /NAMA\s*[:：]?\s*([A-Z\s]+?)\s+STAND/i),
+    alamat: extractField(text, /ALAMAT\s*[:：]?\s*(.+)/i), // Masih dummy karena data alamat tidak tersedia
+    periode: extractField(text, /BL\/TH\s*[:：]?\s*([A-Z]{3}\d{2})/i),
+    total_tagihan: extractField(text, /TOTAL\s+BAYAR\s*[:：]?\s*Rp\s*([\d.]+)/i),
+    denda: extractField(text, /DENDA\s*[:：]?\s*Rp\s*([\d.]+)/i) || "0",
+    jatuh_tempo: extractField(text, /JATUH TEMPO\s*[:：]?\s*(.+)/i), // Belum ada di contoh, placeholder
+  };
+},
 
   DEFAULT(lines) {
     const text = mergeLines(lines).join("\n");
