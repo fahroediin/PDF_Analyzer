@@ -1,6 +1,9 @@
 import { PdfReader } from "ppu-pdf";
 import { createWorker } from "tesseract.js";
 import { PaddleOcrService } from "ppu-paddle-ocr";
+import poppler from 'pdf-poppler';
+import path from 'path';   
+import fs from 'fs';
 import { parsers } from "./utils/parser.js";
 import { mergeLines, extractKtpFromLines } from "./utils/mergeLines.js";
 import { serve } from "bun";
@@ -31,105 +34,223 @@ function normalizeLine(line) {
     .toLowerCase();
 }
 
-// Ambil hanya properti text dari hasil OCR dan gabungkan semua halaman
 function extractTextsFromOcrResult(ocrResult) {
   const allTexts = [];
-
   for (const pageLines of Object.values(ocrResult)) {
+    if (!Array.isArray(pageLines)) continue;
     for (const lineObj of pageLines) {
-      if (lineObj && typeof lineObj.text === "string") {
+      if (typeof lineObj === 'string') {
+        allTexts.push(lineObj.trim());
+      }
+      else if (lineObj && typeof lineObj.text === 'string') {
         allTexts.push(lineObj.text.trim());
       }
     }
   }
-
   return allTexts;
 }
 
-// OCR: Tesseract.js
-async function ocrTesseract(PdfReader, pdf, isScanned) {
-  const result = {};
-  if (isScanned) {
-    const canvasMap = await PdfReader.renderAll(pdf);
-    const worker = await createWorker({ logger: m => console.log(m) });
+// async function preprocessCanvas(canvasInput) {
+//   // Langkah 1-4: Muat canvas input ke dalam canvas node-canvas
+//   const bufferIn = canvasInput.toBuffer('image/png');
+//   const image = await loadImage(bufferIn);
+//   const newCanvas = createCanvas(image.width, image.height);
+//   const ctx = newCanvas.getContext('2d');
+//   ctx.drawImage(image, 0, 0);
 
-    await worker.initialize("eng");
+//   // Langkah 5: Lakukan HANYA Grayscaling.
+//   const imageData = ctx.getImageData(0, 0, newCanvas.width, newCanvas.height);
+//   const data = imageData.data;
+//   for (let i = 0; i < data.length; i += 4) {
+//     // Ubah piksel menjadi rata-rata dari R, G, B
+//     const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
+//     data[i] = avg;     // Red
+//     data[i + 1] = avg; // Green
+//     data[i + 2] = avg; // Blue
+//   }
+//   ctx.putImageData(imageData, 0, 0);
 
-    for (let i = 0; i < canvasMap.size; i++) {
-      const canvas = canvasMap.get(i);
-      if (!canvas) continue;
+//   // Langkah 6: Kembalikan hasilnya sebagai Buffer PNG.
+//   return canvasInput.toBuffer('image/png');
+// }
 
-      try {
-        const { data: { text } } = await worker.recognize(canvas);
-        const lines = cleanLines(preprocessLines(text.split("\n")));
-        result[i] = lines;
-      } catch (err) {
-        console.error(`Tesseract error on page ${i}:`, err);
-        result[i] = [];
+async function convertPdfToImages(pdfBuffer) {
+    const tempDir = './temp_images';
+    if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir);
+    }
+    const outputFile = path.join(tempDir, `page-${Date.now()}`);
+
+    let opts = {
+        format: 'png',
+        out_dir: tempDir,
+        out_prefix: path.basename(outputFile),
+        scale_to: 2400 // Setara dengan ~300 DPI untuk halaman A4
+    };
+
+    // Tulis buffer ke file sementara karena pdf-poppler bekerja dengan path file
+    const tempPdfPath = path.join(tempDir, 'temp.pdf');
+    fs.writeFileSync(tempPdfPath, pdfBuffer);
+
+    await poppler.convert(tempPdfPath, opts);
+
+    // Cari file yang dihasilkan
+    const imagePaths = fs.readdirSync(tempDir).filter(f => f.startsWith(path.basename(outputFile)) && f.endsWith('.png')).map(f => path.join(tempDir, f));
+
+    // Hapus file PDF sementara
+    fs.unlinkSync(tempPdfPath);
+
+    return imagePaths;
+}
+
+
+// DEFINISIKAN KONSTANTA DI SINI AGAR BISA DIAKSES SECARA GLOBAL
+const USE_TESSERACT = process.env.DISABLE_TESSERACT !== "true";
+
+function preprocessLines(lines) {
+  return lines
+    .map(line => line.replace(/\s+/g, " ").trim())
+    .filter(line => line.length > 0);
+}
+
+function cleanLines(lines) {
+  return lines.filter(line => {
+    if (line.length < 3) return false;
+    const validChars = line.match(/[a-zA-Z0-9]/g) || [];
+    return validChars.length >= 0;
+  });
+}
+
+function normalizeLine(line) {
+  if (typeof line !== "string") return "";
+  return line
+    .replace(/\s+/g, " ")
+    .replace(/[^\w\s]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function extractTextsFromOcrResult(ocrResult) {
+  const allTexts = [];
+  for (const pageLines of Object.values(ocrResult)) {
+    if (!Array.isArray(pageLines)) continue;
+    for (const lineObj of pageLines) {
+      if (typeof lineObj === 'string') {
+        allTexts.push(lineObj.trim());
+      }
+      else if (lineObj && typeof lineObj.text === 'string') {
+        allTexts.push(lineObj.text.trim());
       }
     }
-
-    await worker.terminate();
-  } else {
-    const textMap = PdfReader.getLinesFromTexts(await PdfReader.getTexts(pdf));
-    for (let i = 0; i < textMap.size; i++) {
-      const lines = textMap.get(i);
-      if (lines) result[i] = lines;
-    }
   }
-  return result;
+  return allTexts;
 }
 
-// OCR: PaddleOCR
-async function ocrPaddle(pdfReader, pdf, isScanned) {
+// ========================================================================
+// FUNGSI KONVERSI PDF KE GAMBAR YANG ANDAL
+// ========================================================================
+
+async function convertPdfToImages(pdfBuffer) {
+    const tempDir = './temp_images';
+    if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir);
+    }
+    const outputFile = path.join(tempDir, `page-${Date.now()}`);
+
+    let opts = {
+        format: 'png',
+        out_dir: tempDir,
+        out_prefix: path.basename(outputFile),
+        scale_to_x: 2480, // Resolusi tinggi, setara ~300 DPI untuk A4
+        scale_to_y: -1   // Menjaga rasio aspek
+    };
+
+    const tempPdfPath = path.join(tempDir, 'temp.pdf');
+    fs.writeFileSync(tempPdfPath, pdfBuffer);
+
+    await poppler.convert(tempPdfPath, opts);
+
+    const imagePaths = fs.readdirSync(tempDir).filter(f => f.startsWith(path.basename(outputFile)) && f.endsWith('.png')).map(f => path.join(tempDir, f));
+
+    fs.unlinkSync(tempPdfPath);
+    return imagePaths;
+}
+
+// ========================================================================
+// FUNGSI-FUNGSI OCR
+// ========================================================================
+
+async function ocrTesseract(imagePaths) {
   const result = {};
-  if (isScanned) {
-    const canvasMap = await pdfReader.renderAll(pdf);
-    const ocr = await PaddleOcrService.getInstance();
-    for (let i = 0; i < canvasMap.size; i++) {
-      const canvas = canvasMap.get(i);
-      if (!canvas) continue;
-      const texts = await ocr.recognize(canvas);
-      const flattenedLines = texts.lines.flat();
-      const lines = flattenedLines.map(item => ({ text: item.text }));
+  if (!imagePaths || imagePaths.length === 0 || !USE_TESSERACT) return result;
+  
+  const worker = await createWorker({ logger: m => console.log("[TESS]", m) });
+  try {
+    await worker.loadLanguage("ind+eng");
+    await worker.initialize("ind");
 
-      console.log("OCR lines raw:", lines.map(l => l.text));  // tetap tampilkan string saja
-
-      result[i] = lines;
+    for (let i = 0; i < imagePaths.length; i++) {
+        const imagePath = imagePaths[i];
+        console.log(`[TESS] Processing image path: ${imagePath}`);
+        const { data: { text } } = await worker.recognize(imagePath);
+        result[i] = cleanLines(preprocessLines(text.split("\n")));
+        console.log(`[TESS] Done page ${i} (${result[i].length} lines)`);
     }
-    await ocr.destroy();
-  } else {
-    const textMap = pdfReader.getLinesFromTexts(await pdfReader.getTexts(pdf));
-    for (let i = 0; i < textMap.size; i++) {
-      const lines = textMap.get(i);
-      if (lines) result[i] = lines;
+  } catch (err) {
+    console.error("[TESS] Worker failed:", err);
+  } finally {
+    await worker.terminate();
+  }
+  return result;
+}
+
+async function ocrPaddle(imagePaths) {
+  const result = {};
+  if (!imagePaths || imagePaths.length === 0) return result;
+
+  const ocr = await PaddleOcrService.getInstance();
+  try {
+    for (let i = 0; i < imagePaths.length; i++) {
+        const imagePath = imagePaths[i];
+        console.log(`[PADDLE] Processing image path: ${imagePath}`);
+        const texts = await ocr.recognize(imagePath);
+        const flattenedLines = texts.lines.flat();
+        const lines = flattenedLines.map(item => ({ text: item.text }));
+        console.log("OCR lines raw:", lines.map(l => l.text));
+        result[i] = lines;
+    }
+  } catch (err) {
+    console.error("[PADDLE] Service failed:", err);
+  } finally {
+    if (ocr && ocr.destroy) {
+        await ocr.destroy();
     }
   }
   return result;
 }
 
-// Gabungkan hasil OCR Tesseract dan Paddle, lalu buat array string unik berdasarkan normalisasi ketat
+// ========================================================================
+// FUNGSI PENGGABUNG DAN SERVER UTAMA
+// ========================================================================
+
 function mergeAllPagesUnique(resultTesseract, resultPaddle) {
   const textsTesseract = extractTextsFromOcrResult(resultTesseract);
   const textsPaddle = extractTextsFromOcrResult(resultPaddle);
 
   const allTexts = [...textsTesseract, ...textsPaddle];
-
   const seen = new Set();
   const uniqueTexts = [];
 
   for (const text of allTexts) {
     const normalized = normalizeLine(text);
-    if (!seen.has(normalized)) {
+    if (normalized && !seen.has(normalized)) {
       seen.add(normalized);
       uniqueTexts.push(text.trim());
     }
   }
-
   return uniqueTexts;
 }
 
-// Server API
 serve({
   port: 8000,
   async fetch(req) {
@@ -141,86 +262,85 @@ serve({
         return new Response("Only multipart/form-data supported", { status: 400 });
       }
 
-try {
-  const formData = await req.formData();
-  const file = formData.get("file");
-  const typeInput = formData.get("type");
-  const docType = typeof typeInput === "string" ? typeInput.toUpperCase() : "NIB";
+      try {
+        const formData = await req.formData();
+        const file = formData.get("file");
+        const typeInput = formData.get("type");
+        const docType = typeof typeInput === "string" ? typeInput.toUpperCase() : "NIB";
 
-  if (!file || typeof file !== "object" || typeof file.arrayBuffer !== "function") {
-    return new Response("File is required", { status: 400 });
-  }
+        if (!file || typeof file !== "object" || typeof file.arrayBuffer !== "function") {
+          return new Response("File is required", { status: 400 });
+        }
 
-  // Validasi ringan: hanya untuk proteksi dasar
-  const allowedExtensions = [".pdf", ".jpg", ".jpeg", ".png"];
-  const fileName = file.name?.toLowerCase() || "";
-  const fileSizeMB = file.size / 1024 / 1024;
+        const originalBuffer = await file.arrayBuffer();
+        
+        const pdfReader = new PdfReader({ verbose: false });
+        let pdf, isScanned, texts;
+        try {
+            pdf = pdfReader.open(originalBuffer);
+            texts = await pdfReader.getTexts(pdf);
+            isScanned = pdfReader.isScanned(texts);
+        } catch (e) {
+            return new Response("File tidak valid atau gagal dibaca: " + e.message, { status: 422 });
+        }
 
-  if (!allowedExtensions.some(ext => fileName.endsWith(ext))) {
-    console.warn(`Ekstensi file tidak dikenali: ${fileName}`);
-    // Tidak return error langsung, biarkan tetap diproses
-  }
+        let resultTesseract = {};
+        let resultPaddle = {};
 
-  if (fileSizeMB > 10) {
-    return new Response(`Ukuran file terlalu besar (${fileSizeMB.toFixed(2)} MB). Maksimal 10 MB`, {
-      status: 413,
-    });
-  }
+        if (isScanned) {
+            console.log("Scanned PDF detected. Converting to images with Poppler...");
+            const imagePaths = await convertPdfToImages(Buffer.from(originalBuffer));
 
-  const buffer = await file.arrayBuffer();
-  const pdfReader = new PdfReader({ verbose: false });
+            if (imagePaths.length === 0) {
+                pdfReader.destroy(pdf);
+                return new Response("Gagal mengonversi halaman PDF menjadi gambar.", { status: 500 });
+            }
 
-  let pdf;
-  try {
-    pdf = pdfReader.open(buffer);
-  } catch (e) {
-    return new Response("File tidak valid: gagal membuka PDF", {
-      status: 422,
-    });
-  }
+            console.log(`Successfully converted to ${imagePaths.length} image(s). Starting OCR...`);
 
-  let texts = [];
-  try {
-    texts = await pdfReader.getTexts(pdf);
-  } catch (e) {
-    pdfReader.destroy?.(pdf);
-    return new Response("Gagal membaca isi PDF", { status: 422 });
-  }
+            [resultTesseract, resultPaddle] = await Promise.all([
+                ocrTesseract(imagePaths),
+                ocrPaddle(imagePaths)
+            ]);
 
-  const isScanned = pdfReader.isScanned(texts);
+            console.log("OCR finished. Cleaning up temporary images...");
+            imagePaths.forEach(p => fs.unlinkSync(p));
 
-  // Jalankan OCR
-  const [resultTesseract, resultPaddle] = await Promise.all([
-    ocrTesseract(pdfReader, pdf, isScanned),
-    ocrPaddle(pdfReader, pdf, isScanned)
-  ]);
+        } else {
+            console.log("Digital PDF detected. Extracting text directly...");
+            const textMap = pdfReader.getLinesFromTexts(texts);
+            
+            for (let i = 0; i < textMap.size; i++) {
+                const pageTextLines = textMap.get(i) || [];
+                resultTesseract[i] = pageTextLines; 
+                resultPaddle[i] = pageTextLines.map(line => ({ text: line }));
+            }
+        }
+        
+        pdfReader.destroy(pdf);
 
-  let mergedLines = mergeAllPagesUnique(resultTesseract, resultPaddle);
-  mergedLines = mergeLines(mergedLines, docType);
+        let mergedLines = mergeAllPagesUnique(resultTesseract, resultPaddle);
+        mergedLines = mergeLines(mergedLines, docType);
 
-  let parsedData = {};
-  if (docType === "KTP") {
-    parsedData = extractKtpFromLines(mergedLines);
-  } else {
-    const parser = parsers[docType] || (() => ({}));
-    parsedData = parser(mergedLines);
-  }
+        let parsedData = {};
+        if (docType === "KTP") {
+          parsedData = extractKtpFromLines(mergedLines);
+        } else {
+          const parser = parsers[docType] || (() => ({}));
+          parsedData = parser(mergedLines);
+        }
 
-  pdfReader.destroy?.(pdf);
+        return Response.json({
+          document_name: file.name || "unknown",
+          document_type: docType,
+          type: isScanned ? "scanned" : "digital",
+          extractedLines: mergedLines,
+          parsedData,
+        });
 
-  return Response.json({
-    document_name: file.name || "unknown",
-    document_type: docType,
-    type: isScanned ? "scanned" : "digital",
-    extractedLines: mergedLines,
-    parsedData,
-  });
-
-} catch (err) {
-  console.error("Error processing PDF:", err);
-  return new Response("Failed to process PDF: " + (err.message || String(err)), {
-    status: 500,
-          });
+      } catch (err) {
+        console.error("Fatal error during processing:", err);
+        return new Response("Failed to process PDF: " + (err.message || String(err)), { status: 500 });
       }
     }
 

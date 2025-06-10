@@ -49,258 +49,288 @@ export const parsers = {
     };
   },
 
+// Di dalam file parser.js
+// Ganti seluruh fungsi SIUP dengan ini:
+
 SIUP(lines) {
   // Helper fungsi untuk gabungkan baris dan ekstrak dengan regex
-  function mergeLines(lines) {
-    return lines.map(line => line.trim()).filter(Boolean);
-  }
+  const text = lines.map(line => line.trim()).filter(Boolean).join("\n");
 
-  function extractField(text, regex) {
-    const match = text.match(regex);
-    return match ? match[1].trim() : null;
-  }
+  const extractField = (txt, regex) => {
+    const match = txt.match(regex);
+    return match && match[1] ? match[1].trim().replace(/\s+/g, ' ') : null;
+  };
 
-  const text = mergeLines(lines).join("\n");
-
-  // Deteksi apakah badan usaha adalah PT
-  const isPT = /Nama Usaha\s*[:：]?\s*PT\s+/i.test(text);
-
-  // Ambil data utama
+  // --- Analisis Data Utama ---
   const nib = extractField(text, /Nomor Induk Berusaha\s*[:：]?\s*(\d{13,})/i);
-  const kodeKbli = extractField(text, /KBLI\s*[:：]?\s*(\d{5})\s*-/i);
   const namaUsaha = extractField(text, /Nama Usaha\s*[:：]?\s*(.+)/i);
-  const jenisUsaha = extractField(text, /KBLI\s*[:：]?\s*\d{5}\s*-\s*(.+)/i);
+  const tanggalTerbit = extractField(text, /Tanggal Terbit Izin Usaha Proyek Pertama\s*[:：]?\s*(\d{1,2}\s+\w+\s+\d{4})/i);
+  const alamatKantor = extractField(text, /Alamat Kantor\s*\/\s*Korespondensi\s*[:：]?\s*([\s\S]+?)(?=Kode KBLI|1\.\s*Pelaku Usaha)/i);
 
-  // Ambil alamat kantor (menangkap alamat kantor / korespondensi)
-  const alamatKantor = extractField(
-    text,
-    /Alamat Kantor\s*\/\s*Korespondensi\s*[:：]?\s*([\s\S]+?)(?=\n(?:Kode KBLI|Nama KBLI|Kode|Nama|Lokasi|1\.))/i
-  ) || extractField(
-    text,
-    /Alamat Kantor\s*\/\s*Korespondensi\s*[:：]?\s*([^\n]+)/i
-  );
+  // --- Logika Baru untuk Data dari Lampiran ---
+  let kodeKbli = null;
+  let jenisUsaha = null;
+  let alamatUsaha = null;
+  let pejabatBerwenang = null;
 
-  // Ambil alamat usaha, fallback ke alamat kantor kalau kosong atau "lihat lampiran"
-  let alamatUsaha = extractField(text, /Lokasi Usaha\s*[:：]?\s*(.+)/i);
-  if (!alamatUsaha || alamatUsaha.toLowerCase().includes("lihat lampiran")) {
+  // Pola untuk menemukan data di dalam LAMPIRAN
+  // Mencari blok yang diawali dengan nomor, diikuti oleh Pejabat Berwenang, lalu KBLI, Jenis Usaha, dan Alamat
+  const lampiranPattern = /\d+\s+((?:Walikota|Bupati|Gubernur|Pejabat)[\s\S]+?)\s*KBLI[:：]?\s*(\d{5})\s*-\s*([^\n]+?)\s+((?:Komplek|Jalan|JL\.?|Blok|Gedung|Kawasan)[\s\S]+?)(?=\n|Nomor Proyek|Lembaga OSS)/i;
+  const lampiranMatch = text.match(lampiranPattern);
+
+  if (lampiranMatch) {
+    // Jika pola lampiran yang kompleks cocok
+    pejabatBerwenang = lampiranMatch[1].trim();
+    kodeKbli = lampiranMatch[2];
+    jenisUsaha = lampiranMatch[3].trim();
+    alamatUsaha = lampiranMatch[4].trim().replace(/\s+/g, ' ');
+  } else {
+    // Fallback jika pola di atas tidak cocok (mencari satu per satu)
+    kodeKbli = extractField(text, /KBLI\s*[:：]?\s*(\d{5})/i);
+    jenisUsaha = extractField(text, /KBLI\s*[:：]?\s*\d{5}\s*-\s*([^\n]+)/i);
+    alamatUsaha = extractField(text, /Lokasi Usaha\s*[:：]?\s*([\s\S]+?)(?=\n|Nomor Proyek)/i) || alamatKantor;
+    pejabatBerwenang = extractField(text, /\d+\s+((?:Walikota|Bupati|Gubernur|Pejabat)[\s\S]+?)(?=KBLI:)/i);
+  }
+
+  // Jika alamat usaha tidak ditemukan, gunakan alamat kantor sebagai fallback
+  if (!alamatUsaha) {
     alamatUsaha = alamatKantor;
-  }
-
-  // Ambil tanggal terbit
-  const tanggalTerbit = extractField(
-    text,
-    /Tanggal Terbit Izin Usaha Proyek Pertama\s*[:：]?\s*(\d{1,2} \w+ \d{4})/i
-  ) || extractField(
-    text,
-    /Dicetak tanggal\s*[:：]?\s*(\d{1,2} \w+ \d{4})/i
-  );
-
-  // Heuristik: nama pemilik
-  let namaPemilik = extractField(text, /Nama Pemilik\s*[:：]?\s*(.+)/i);
-  if (!namaPemilik && !isPT) {
-    const namaMatch = text.match(/(Bapak|Ibu|Sdr\.?|Saudara)\s+([A-Z\s]+)/i);
-    namaPemilik = namaMatch ? namaMatch[2].trim() : null;
-  }
-
-  // Fallback dari "Pejabat Berwenang"
-  if (!namaPemilik) {
-    // Ambil nama pejabat berwenang dari baris yang ada nomor dan jabatan, sampai sebelum KBLI
-    const pejabatMatch = text.match(/\d+\s+(Walikota|Bupati|Gubernur|Pejabat)[^\n]+(?=KBLI:)/i);
-    if (pejabatMatch) {
-      // Hilangkan nomor depan jika ada
-      namaPemilik = pejabatMatch[0].replace(/^\d+\s+/, '').trim();
-    }
-  }
-
-  // Ambil alamat pemilik, fallback ke alamat kantor kalau kosong
-  let alamatPemilik = extractField(
-    text,
-    /Alamat Pemilik\s*[:：]?\s*([\s\S]+?)(?=\n(?:Nama|Kode|KBLI|Barang|Lokasi|Izin|Dikeluarkan))/i
-  );
-  if (!alamatPemilik) {
-    alamatPemilik = alamatKantor;
   }
 
   return {
     nib: nib,
-    kode_bli: kodeKbli,
+    kode_kbli: kodeKbli,
     nama_usaha: namaUsaha,
-    nama_pemilik: namaPemilik,
-    alamat_pemilik: alamatPemilik,
+    nama_pemilik: pejabatBerwenang, // Menggunakan Pejabat Berwenang sebagai nilai utama
+    alamat_pemilik: null, // Alamat pribadi pejabat tidak relevan, jadi null
     jenis_usaha: jenisUsaha,
     alamat_usaha: alamatUsaha,
+    alamat_kantor: alamatKantor,
     tanggal_terbit: tanggalTerbit
   };
 },
 
-  NPWP(lines) {
-    const text = mergeLines(lines).join("\n");
-    return {
-      npwp: extractField(text, /NPWP[:：]?\s*([\d.\-]+)/i),
-      nama: extractField(text, /Nama[:：]?\s*(.+)/i),
-      alamat: extractField(text, /Alamat[:：]?\s*(.+)/i),
-    };
-  },
+NPWP(lines) { // Renamed for clarity
+    const merged = mergeLines(lines); // Asumsikan fungsi mergeLines sudah ada
+    const fullText = merged.join("\n");
 
-  KTP(lines) {
-    const data = {
-      nik: null,
-      nama: null,
-      tempat_tanggal_lahir: null,
-      jenis_kelamin: null,
-      gol_darah: null,
-      alamat: null,
-      rt_rw: null,
-      kel_desa: null,
-      kecamatan: null,
-      status_perkawinan: null,
-      agama: null,
-      pekerjaan: null,
-      kewarganegaraan: null,
-      berlaku_hingga: null
-    };
+    const npwpMatch = fullText.match(/(\d{2}[.\s]?\d{3}[.\s]?\d{3}[.\s]?\d[-\s]?\d{3}[.\s]?\d{3})/);
+    const npwp = npwpMatch ? npwpMatch[0].replace(/\s/g, '') : null;
 
-    // Bersihkan dan normalize lines agar mudah parsing
-    const cleanedLines = lines.map(line => line.trim());
+    let nama = null;
+    let alamat = null;
 
-    for (let i = 0; i < cleanedLines.length; i++) {
-      const line = cleanedLines[i];
+    const npwpLineIndex = merged.findIndex(line =>
+      /\d{2}[.\s]?\d{3}[.\s]?\d{3}[.\s]?\d[-\s]?\d{3}[.\s]?\d{3}/.test(line)
+    );
 
-      switch (true) {
-        case /^nik$/i.test(line):
-          // next line is NIK number
-          if (cleanedLines[i + 1]) {
-            data.nik = cleanedLines[i + 1];
-            i++;
+    if (npwpLineIndex !== -1) {
+      const npwpLine = merged[npwpLineIndex];
+      const afterNpwp = npwpLine.replace(/\d{2}[.\s]?\d{3}[.\s]?\d{3}[.\s]?\d[-\s]?\d{3}[.\s]?\d{3}/, '').trim();
+      if (afterNpwp.length > 2 && /^[A-Z\s.,'-]+$/.test(afterNpwp)) {
+        nama = afterNpwp;
+      } else if (merged[npwpLineIndex + 1] && /^[A-Z\s.,'-]{3,}$/i.test(merged[npwpLineIndex + 1].trim())) {
+        nama = merged[npwpLineIndex + 1].trim();
+      }
+
+      // --- PERBAIKAN LOGIKA ALAMAT DIMULAI DI SINI ---
+
+      for (let i = npwpLineIndex; i < merged.length; i++) {
+        let line = merged[i];
+
+        // 1. Regex untuk menemukan di mana alamat SEBENARNYA dimulai
+        const addressStartKeywords = /(JALAN|JL\.?|GG\.?|PERUMAHAN|DSN\.?|DUSUN|RT|RW|DESA|KELURAHAN|KECAMATAN|KAB|KOTA|PROVINSI)/i;
+        const startMatch = line.match(addressStartKeywords);
+
+        if (startMatch) {
+          // Potong string dari awal keyword alamat yang ditemukan
+          let cleanedAlamat = line.substring(startMatch.index);
+
+          // 2. Regex untuk menemukan keyword sampah di akhir alamat
+          const noiseKeywords = /(Tanggal Terdaftar|Dipindai dengan|Ldjp)/i;
+          const noiseMatch = cleanedAlamat.match(noiseKeywords);
+
+          if (noiseMatch) {
+            // Potong string sebelum keyword sampah ditemukan
+            cleanedAlamat = cleanedAlamat.substring(0, noiseMatch.index);
           }
-          break;
 
-        case /^nama$/i.test(line):
-          if (cleanedLines[i + 1]) {
-            data.nama = cleanedLines[i + 1];
-            i++;
-          }
-          break;
-
-        case /^tempat\/tgllahir$/i.test(line):
-          if (cleanedLines[i + 1]) {
-            data.tempat_tanggal_lahir = cleanedLines[i + 1];
-            i++;
-          }
-          break;
-
-        case /^jenis kelamin$/i.test(line):
-          if (cleanedLines[i + 1]) {
-            data.jenis_kelamin = cleanedLines[i + 1];
-            i++;
-          }
-          break;
-
-        case /^gol\.? darah$/i.test(line):
-          if (cleanedLines[i + 1] && !/alamat/i.test(cleanedLines[i + 1])) {
-            data.gol_darah = cleanedLines[i + 1];
-            i++;
-          }
-          break;
-
-        case /^alamat$/i.test(line):
-          if (cleanedLines[i + 1]) {
-            data.alamat = cleanedLines[i + 1];
-            i++;
-          }
-          break;
-
-        case /^rt\/rw$/i.test(line):
-          if (cleanedLines[i + 1]) {
-            data.rt_rw = cleanedLines[i + 1];
-            i++;
-          }
-          break;
-
-        case /^kel\/desa$/i.test(line):
-          if (cleanedLines[i + 1]) {
-            data.kel_desa = cleanedLines[i + 1];
-            i++;
-          }
-          break;
-
-        case /^kecamatan$/i.test(line):
-          // kadang ada ":" diawal
-          if (cleanedLines[i + 1]) {
-            data.kecamatan = cleanedLines[i + 1].replace(/^:/, '').trim();
-            i++;
-          }
-          break;
-
-        case /^status perkawinan/i.test(line):
-          // bisa gabung dalam satu line atau terpisah
-          // cek di line ini ada kata status perkawinan
-          let statusLine = line.replace(/status perkawinan[:：]?\s*/i, '').trim();
-          if (statusLine) {
-            data.status_perkawinan = statusLine;
-          } else if (cleanedLines[i + 1]) {
-            data.status_perkawinan = cleanedLines[i + 1];
-            i++;
-          }
-          break;
-
-        case /^agama$/i.test(line):
-          if (cleanedLines[i + 1]) {
-            data.agama = cleanedLines[i + 1].replace(/^:/, '').trim();
-            i++;
-          }
-          break;
-
-        case /^pekerjaan$/i.test(line):
-          if (cleanedLines[i + 1]) {
-            data.pekerjaan = cleanedLines[i + 1].replace(/^:/, '').trim();
-            i++;
-          }
-          break;
-
-        case /^kewarganegaraan[:：]?/i.test(line):
-          // bisa gabung satu line
-          data.kewarganegaraan = line.replace(/kewarganegaraan[:：]?\s*/i, '').trim();
-          // jika kosong, cek next line
-          if (!data.kewarganegaraan && cleanedLines[i + 1]) {
-            data.kewarganegaraan = cleanedLines[i + 1];
-            i++;
-          }
-          break;
-
-        case /^berlaku hingga$/i.test(line):
-          if (cleanedLines[i + 1]) {
-            data.berlaku_hingga = cleanedLines[i + 1];
-            i++;
-          }
-          break;
-
-        default:
-          // Cek jika ada "Status Perkawinan" dan nilainya nempel di line (misal: "Status PerkawinanBELUM KAWIN")
-          if (/status perkawinan/i.test(line)) {
-            let match = line.match(/status perkawinan[:：]?\s*(.+)/i);
-            if (match) data.status_perkawinan = match[1].trim();
-          }
-          // Cek Kewarganegaraan dengan tanda : contohnya "Kewarganegaraan:WNI"
-          if (/kewarganegaraan[:：]/i.test(line)) {
-            data.kewarganegaraan = line.split(/kewarganegaraan[:：]/i)[1].trim();
-          }
-          break;
+          // 3. Hapus spasi berlebih di awal/akhir dan karakter tidak penting
+          alamat = cleanedAlamat.trim().replace(/\]$/, '').trim();
+          break; // Hentikan pencarian setelah alamat ditemukan dan dibersihkan
+        }
       }
     }
 
-    return data;
-  },
+    return { npwp, nama, alamat };
+},
 
-  KK(lines) {
-    const text = mergeLines(lines).join("\n");
-    return {
-      no_kk: extractField(text, /No\.? KK[:：]?\s*(\d{16})/),
-      kepala_keluarga: extractField(text, /Nama Kepala Keluarga[:：]?\s*(.+)/i),
-      alamat: extractField(text, /Alamat[:：]?\s*(.+)/i),
-      anggota_keluarga: extractField(text, /Nama\s+NIK\s+Jenis Kelamin[\s\S]+?(?=\n\n|$)/i), // Complex regex
-    };
-  },
+KTP(lines) {
+  // Langkah 1: Gabungkan semua baris dan lakukan pra-pemrosesan agresif.
+  let text = lines.join(' ');
+  text = text.replace(/Tempat\/Tgl\s*Lahir/gi, ' TempatTglLahir ')
+             .replace(/Gol\.\s*Darah/gi, ' GolDarah ')
+             .replace(/Jenis\s*Kelamin/gi, ' JenisKelamin ')
+             .replace(/Status\s*Perkawinan/gi, ' StatusPerkawinan ')
+             .replace(/RT\/RW/gi, ' RTRW ')
+             .replace(/Kel\/Desa/gi, ' KelDesa ')
+             .replace(/[:：]/g, ' ') // Hapus semua titik dua.
+             .replace(/\s+/g, ' '); // Normalisasi spasi.
+
+  // Daftar semua kemungkinan kata kunci UNIK yang kita buat di atas.
+  const allKeywords = [
+    'NIK', 'Nama', 'TempatTglLahir', 'JenisKelamin', 'GolDarah',
+    'Alamat', 'RTRW', 'KelDesa', 'Kecamatan', 'Agama',
+    'StatusPerkawinan', 'Pekerjaan', 'Kewarganegaraan', 'Berlaku Hingga'
+  ];
+
+  /**
+   * Helper function yang mengekstrak nilai SETELAH sebuah kata kunci,
+   * dan berhenti SEBELUM kata kunci berikutnya.
+   */
+  const extractValueAfterKeyword = (startKeyword, textBlock) => {
+    // Buat daftar semua kata kunci LAINNYA untuk dijadikan penanda berhenti.
+    const stopKeywords = allKeywords.filter(k => k.toLowerCase() !== startKeyword.toLowerCase());
+    const stopPattern = stopKeywords.join('|');
+
+    // Regex: Temukan startKeyword, tangkap semuanya (non-greedy) sampai menemukan stopKeyword.
+    const regex = new RegExp(`${startKeyword}\\s*([\\s\\S]*?)(?=\\s*(?:${stopPattern})|$)`, 'i');
+    const match = textBlock.match(regex);
+    return match && match[1] ? match[1].trim() : null;
+  };
+  
+  // Ekstrak NIK menggunakan pola angka yang unik, ini paling andal.
+  const nikMatch = text.match(/\b(31|32|33|34|35|36|51|52|53|61|62|63|64|71|72|73|74|75|76|81|82|91|94)\d{14}\b/);
+  
+  const data = {};
+  
+  // Ekstrak setiap field menggunakan helper di atas
+  allKeywords.forEach(keyword => {
+    const key = keyword.replace(/([A-Z])/g, '_$1').toLowerCase().slice(1); // TempatTglLahir -> tempat_tgl_lahir
+    data[key] = extractValueAfterKeyword(keyword, text);
+  });
+  
+  // Timpa NIK dengan hasil dari regex yang lebih andal
+  data.nik = nikMatch ? nikMatch[0] : data.nik;
+  
+  // --- Pembersihan dan Penanganan Khusus Pasca-Ekstraksi ---
+
+  // Karena "Jenis Kelamin" ada di baris yang sama dengan "Tempat/Tgl Lahir",
+  // nilainya mungkin masih menyatu. Mari kita pisahkan.
+  if (data.tempat_tgl_lahir) {
+    const ttlParts = data.tempat_tgl_lahir.split(/JenisKelamin/i);
+    data.tempat_tgl_lahir = ttlParts[0] ? ttlParts[0].trim() : null;
+    if (ttlParts[1] && !data.jenis_kelamin) {
+      data.jenis_kelamin = ttlParts[1].trim();
+    }
+  }
+
+  // Lakukan hal yang sama untuk Agama, Status, Pekerjaan, Kewarganegaraan
+  if (data.agama) {
+      const agamaBlock = data.agama;
+      data.agama = extractValueAfterKeyword('Agama', agamaBlock);
+      data.status_perkawinan = extractValueAfterKeyword('StatusPerkawinan', agamaBlock);
+      data.pekerjaan = extractValueAfterKeyword('Pekerjaan', agamaBlock);
+      data.kewarganegaraan = extractValueAfterKeyword('Kewarganegaraan', agamaBlock);
+  }
+
+  // Field tambahan dari header (jika ada)
+  data.provinsi = extractValueAfterKeyword('PROVINSI', text) || extractValueAfterKeyword('PBGVINSIE', text);
+  data.kabupaten = extractValueAfterKeyword('KABUPATEN', text) || extractValueAfterKeyword('KABUIPAEN', text);
+  
+  // Hapus nama field yang tidak perlu
+  delete data.r_t_r_w;
+  delete data.kel__desa;
+  
+  return {
+      nik: data.nik,
+      nama: data.nama,
+      tempat_tanggal_lahir: data.tempat_tgl_lahir,
+      jenis_kelamin: data.jenis_kelamin,
+      gol_darah: data.gol_darah,
+      alamat: data.alamat,
+      rt_rw: data.rt_rw,
+      kel_desa: data.kel_desa,
+      kecamatan: data.kecamatan,
+      Kabupaten: data.kabupaten,
+      provinsi: data.provinsi,
+      kode_pos: null,
+      status_perkawinan: data.status_perkawinan,
+      agama: data.agama,
+      pekerjaan: data.pekerjaan,
+      kewarganegaraan: data.kewarganegaraan,
+      berlaku_hingga: data.berlaku_hingga
+  };
+},
+
+KK(lines) {
+  const text = lines.join(" ");
+
+  const extractField = (pattern) => {
+    const match = text.match(pattern);
+    return match && match[1] ? match[1].trim() : null;
+  };
+
+  // --- 1. Ekstrak Nomor KK (Sudah Benar) ---
+  const no_kk = extractField(/No\.?\s*[:：]?\s*(\d{16})/i);
+
+  // --- 2. Ekstrak Kepala Keluarga (Diperbaiki) ---
+  // Gunakan kata "Alamat" sebagai penanda akhir. Dibuat non-greedy (dengan ?).
+  const kepala_keluarga = extractField(/Nama\s+Kepala\s+Keluarg[ae]\s*[:：]?\s*([A-Z\s.'-]+?)\s*Alama[et]/i);
+
+  // --- 3. Ekstrak Alamat (Diperbaiki) ---
+  // Tangkap semua di antara "Alamat" dan "Provinsi", lalu bersihkan.
+  let alamat = extractField(/Alama[et]\s*[:：]?\s*(.*?)\s*Provinsi/i);
+  if (alamat) {
+    alamat = alamat
+      .replace(/Desa\/Kelurahan|RTIRW|Kocamatan|Kabupaten\s*Kota|Kode\s*Pos/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // --- 4. Ekstrak Anggota Keluarga (Perbaikan Total) ---
+  const anggota_keluarga = [];
+  
+  // a. Isolasi blok data anggota untuk mengurangi kesalahan.
+  //    Data anggota dimulai setelah header tabel (misal: "Jenis Pekeraan").
+  const memberDataBlock = text.split(/Jenis\s+Pekeraan/i)[1] || text;
+
+  // b. Regex yang diperbaiki: non-greedy dan lebih spesifik.
+  //    ([A-Z\s'.]{4,35}?) -> Tangkap nama (4-35 karakter), '?' membuatnya berhenti secepat mungkin.
+  const memberRegex = /\b([A-Z\s'.]{4,35}?)\s*(\d{16})\b/g;
+
+  let match;
+  while ((match = memberRegex.exec(memberDataBlock)) !== null) {
+    // match[1] adalah nama, match[2] adalah NIK.
+    // Lakukan pembersihan sederhana pada nama untuk menghapus sisa-sisa yang tidak diinginkan.
+    const cleanedName = match[1]
+      .replace(/L\s*$/, '') // Hapus 'L' (Laki-laki) di akhir
+      .replace(/PEREMPUAN\s*$/, '') // Hapus 'PEREMPUAN' di akhir
+      .trim();
+      
+    // Hanya tambahkan jika nama yang bersih memiliki panjang yang masuk akal.
+    if (cleanedName.length > 2) {
+        anggota_keluarga.push({
+            nama: cleanedName,
+            nik: match[2].trim()
+        });
+    }
+  }
+
+  // Jika kepala keluarga belum ditemukan, coba ambil dari anggota pertama.
+  let finalKepalaKeluarga = kepala_keluarga;
+  if (!finalKepalaKeluarga && anggota_keluarga.length > 0) {
+      finalKepalaKeluarga = anggota_keluarga[0].nama;
+  }
+  
+  return {
+    no_kk,
+    kepala_keluarga: finalKepalaKeluarga,
+    alamat,
+    anggota_keluarga: anggota_keluarga.length > 0 ? anggota_keluarga : null,
+  };
+}
+,
 
   AKTA_KELAHIRAN(lines) {
     const text = mergeLines(lines).join("\n");
